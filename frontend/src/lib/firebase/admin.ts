@@ -1,62 +1,84 @@
 /**
- * Firebase ADMIN SDK initialization — SERVER ONLY.
+ * SERVER-ONLY Firebase ID token verification — SERVER ONLY.
  *
- * Never import this file from a Client Component or anything bundled to the
- * browser. It reads FIREBASE_ADMIN_* secrets (private key etc.) which must
- * never be exposed with a NEXT_PUBLIC_ prefix. It is used only inside
- * Next.js Route Handlers (app/api/**\/route.ts) to:
- *   - verify a user's Firebase ID token before trusting `uid` on the server
- *   - perform privileged Cloudinary cleanup tied to Firestore ownership checks
+ * This deliberately does NOT use the `firebase-admin` SDK. That SDK pulls in
+ * `jwks-rsa`, which pulls in an old `jose` version whose `"workerd"` package
+ * export condition points at a file that doesn't exist in the published
+ * package. That's harmless on a normal Node server, but it makes the whole
+ * dependency un-bundleable for Cloudflare Workers (OpenNext's Cloudflare
+ * adapter bundles the server with esbuild targeting `workerd`, which hits
+ * that broken export and fails with "Could not resolve \"jose\""). More
+ * generally, `firebase-admin` relies on several Node-only APIs (gRPC, native
+ * crypto internals, etc.) that don't exist in the Workers runtime at all, so
+ * swapping the dependency instead of patching around it is the fix.
  *
- * All normal chat CRUD (reading/writing conversations & messages) happens
- * client-side with the Firebase client SDK, gated by firestore.rules —
- * Admin SDK is intentionally NOT used for that, per the "prefer client SDK,
- * Admin only for trusted server-side ops" requirement.
+ * Verifying a Firebase ID token does NOT require any service-account secret:
+ * Firebase signs ID tokens with a key from a small, published, rotating set
+ * of Google-hosted public keys. Verifying the signature against those public
+ * keys (plus checking issuer/audience/expiry) is exactly what
+ * `firebase-admin`'s `verifyIdToken` does under the hood, and it's safe to
+ * reimplement client-side-readable-key verification here because a public
+ * key can only verify signatures, never create them.
+ *
+ * This makes FIREBASE_ADMIN_CLIENT_EMAIL / FIREBASE_ADMIN_PRIVATE_KEY
+ * unnecessary — only the (public) project id is needed, and it falls back to
+ * NEXT_PUBLIC_FIREBASE_PROJECT_ID if a separate server-only copy isn't set.
  */
-import { getApps, getApp, initializeApp, cert, type App } from 'firebase-admin/app';
-import { getAuth, type Auth } from 'firebase-admin/auth';
+import { createRemoteJWKSet, jwtVerify } from 'jose';
 
-function buildAdminApp(): App {
-  if (getApps().length) return getApp();
+const PROJECT_ID = process.env.FIREBASE_ADMIN_PROJECT_ID || process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
 
-  const projectId = process.env.FIREBASE_ADMIN_PROJECT_ID;
-  const clientEmail = process.env.FIREBASE_ADMIN_CLIENT_EMAIL;
-  // Private keys stored in .env files usually have literal "\n" sequences;
-  // they must be converted back to real newlines before use.
-  const privateKey = process.env.FIREBASE_ADMIN_PRIVATE_KEY?.replace(/\\n/g, '\n');
+// Google's published, rotating public keys for Firebase Auth ID tokens.
+// https://firebase.google.com/docs/auth/admin/verify-id-tokens#verify_id_tokens_using_a_third-party_jwt_library
+const GOOGLE_SECURETOKEN_JWKS_URL = 'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com';
 
-  if (!projectId || !clientEmail || !privateKey) {
-    throw new Error(
-      'Firebase Admin SDK is not configured. Set FIREBASE_ADMIN_PROJECT_ID, ' +
-        'FIREBASE_ADMIN_CLIENT_EMAIL, and FIREBASE_ADMIN_PRIVATE_KEY in your server environment ' +
-        '(never with a NEXT_PUBLIC_ prefix).'
-    );
+// createRemoteJWKSet caches the fetched keys (and respects their HTTP cache
+// headers) internally, so this is safe to reuse across requests/invocations
+// without refetching Google's keys every time.
+let jwks: ReturnType<typeof createRemoteJWKSet> | null = null;
+function getJwks() {
+  if (!jwks) {
+    jwks = createRemoteJWKSet(new URL(GOOGLE_SECURETOKEN_JWKS_URL));
   }
-
-  return initializeApp({
-    credential: cert({ projectId, clientEmail, privateKey }),
-  });
-}
-
-let cachedAuth: Auth | null = null;
-
-/** Lazily initialized so route handlers that don't need Admin never crash the build. */
-export function getAdminAuth(): Auth {
-  if (!cachedAuth) {
-    cachedAuth = getAuth(buildAdminApp());
-  }
-  return cachedAuth;
+  return jwks;
 }
 
 /**
  * Verifies the Firebase ID token sent from the client (Authorization: Bearer <token>)
  * and returns the trusted uid. Throws if the token is missing/invalid/expired.
+ *
+ * Implements Firebase's documented third-party JWT verification checklist:
+ * algorithm, key match, issuer, audience, and expiry are all checked by
+ * jose's `jwtVerify` itself; `sub` (non-empty) and `auth_time` (not in the
+ * future) are checked explicitly below since jose has no opinion on them.
  */
 export async function requireUid(authorizationHeader: string | null): Promise<string> {
   if (!authorizationHeader?.startsWith('Bearer ')) {
     throw new Error('Missing bearer token');
   }
+  if (!PROJECT_ID) {
+    throw new Error(
+      'Firebase project id is not configured on the server. Set FIREBASE_ADMIN_PROJECT_ID (or NEXT_PUBLIC_FIREBASE_PROJECT_ID).'
+    );
+  }
+
   const idToken = authorizationHeader.slice('Bearer '.length);
-  const decoded = await getAdminAuth().verifyIdToken(idToken);
-  return decoded.uid;
+
+  const { payload } = await jwtVerify(idToken, getJwks(), {
+    issuer: `https://securetoken.google.com/${PROJECT_ID}`,
+    audience: PROJECT_ID,
+    algorithms: ['RS256'],
+  });
+
+  const uid = payload.sub;
+  if (!uid || typeof uid !== 'string') {
+    throw new Error('Invalid token: missing subject claim.');
+  }
+
+  const authTime = payload.auth_time;
+  if (typeof authTime === 'number' && authTime * 1000 > Date.now()) {
+    throw new Error('Invalid token: auth_time is in the future.');
+  }
+
+  return uid;
 }
