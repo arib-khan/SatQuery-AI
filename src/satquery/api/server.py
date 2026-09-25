@@ -25,6 +25,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 
+import sys
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+_SRC_ROOT = os.path.join(_REPO_ROOT, "src")
+if _SRC_ROOT not in sys.path:
+    sys.path.insert(0, _SRC_ROOT)
+
 # Import agent primitives from app or satquery
 import app as agent_module
 
@@ -57,13 +65,20 @@ def preload_weights():
     threading.Thread(target=_warmup, daemon=True).start()
 
 
-def pil_to_base64(img: Optional[Image.Image]) -> Optional[str]:
+def pil_to_base64(img: Optional[Image.Image], quality: int = 88) -> Optional[str]:
+    """Encode PIL image to base64 data URI.
+
+    Uses JPEG (quality=88) by default — ~60-70% smaller than PNG with
+    negligible visual difference for satellite imagery and evidence overlays.
+    Next.js/React accepts data:image/jpeg;base64,... equally to PNG.
+    """
     if img is None:
         return None
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    rgb_img = img.convert("RGB")  # JPEG does not support alpha
+    rgb_img.save(buf, format="JPEG", quality=quality, optimize=True)
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-    return f"data:image/png;base64,{b64}"
+    return f"data:image/jpeg;base64,{b64}"
 
 
 @app.get("/api/status")

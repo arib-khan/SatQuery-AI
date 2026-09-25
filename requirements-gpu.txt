@@ -1,0 +1,24 @@
+# ============================================================
+# SatQuery AI — GPU Production Requirements
+# For deployments with NVIDIA CUDA GPU (sm_80+ recommended)
+# ============================================================
+#
+# Install with:
+#   pip install -r requirements-gpu.txt
+#
+# Prerequisites:
+#   - NVIDIA GPU with CUDA 12.1+ driver
+#   - CUDA 12.1+ toolkit installed
+# ============================================================
+
+# All production packages
+-r requirements-production.txt
+
+# --- PyTorch CUDA Build (replaces CPU torch) ---
+# Uninstall CPU torch first: pip uninstall torch
+# Then install CUDA torch (adjust cu121 for your CUDA version):
+# pip install torch==2.5.1+cu121 --index-url https://download.pytorch.org/whl/cu121
+--extra-index-url https://download.pytorch.org/whl/cu121
+
+# --- 4-bit NF4 quantization (CUDA only — reduces GPU VRAM from 8GB to ~2.5GB) ---
+bitsandbytes>=0.43.0,<0.46.0

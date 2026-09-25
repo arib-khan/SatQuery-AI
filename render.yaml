@@ -1,11 +1,21 @@
 services:
   - type: web
-    name: satquery-ai
+    name: satquery-ai-backend
     env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: streamlit run src/satquery/ui/app.py --server.port=$PORT --server.address=0.0.0.0
+    buildCommand: >
+      pip install torch==2.5.1+cpu --index-url https://download.pytorch.org/whl/cpu &&
+      pip install -r requirements-production.txt
+    startCommand: python -m uvicorn src.satquery.api.server:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
         value: 3.10.12
-      - key: SATQUERY_ENGINE_MODE
-        value: standalone
+      - key: SATQUERY_FORCE_CPU
+        value: "1"
+      - key: SATQUERY_LOAD_GRADIO
+        value: "0"
+      - key: PYTHONPATH
+        value: /opt/render/project/src:/opt/render/project/src/src
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_MODEL
+        value: inclusionai/ling-3.0-flash-vl:free

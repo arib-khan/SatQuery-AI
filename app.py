@@ -44,7 +44,18 @@ try:
 except ImportError:
     _HAS_SPACES = False
 
-import gradio as gr
+# Gradio is only imported when running the demo UI directly.
+# When server.py imports this module as 'import app as agent_module',
+# Gradio is NOT needed and NOT loaded — saving ~750MB+ of RAM at startup.
+_LOAD_GRADIO = os.environ.get("SATQUERY_LOAD_GRADIO", "0") == "1" or __name__ == "__main__"
+gr = None
+if _LOAD_GRADIO:
+    try:
+        import gradio as _gr
+        gr = _gr
+    except ImportError:
+        print("[gradio] Gradio not installed. Run: pip install gradio>=4.0.0")
+
 from transformers import (
     AutoModelForImageTextToText,
     AutoProcessor,
@@ -225,10 +236,13 @@ def _load():
             print(f"[quantization] Falling back to float16 ({e})")
             load_kwargs["torch_dtype"] = torch.float16
     else:
-        print(f"[device] Initializing Qwen3-VL-4B on {num_threads} CPU threads (zero-crash mode).")
+        print(f"[device] Initializing Qwen3-VL-4B on {num_threads} CPU threads (FP16 — ~8.5 GB RAM).")
+        # FP16 halves model-weight RAM: ~8.5 GB vs ~16 GB for float32.
+        # Weights are stored as float16; CPU matmuls internally upcast to float32.
+        # This is safe and supported on PyTorch 2.0+ for CPU inference.
         load_kwargs = {
             "device_map": "cpu",
-            "torch_dtype": torch.float32,
+            "torch_dtype": torch.float16,
             "low_cpu_mem_usage": True,
         }
 
@@ -273,7 +287,13 @@ def _try_rasterio(path: str, meta: dict) -> Optional[Image.Image]:
             meta["resolution"] = (round(abs(src.transform.a), 4), round(abs(src.transform.e), 4))
             meta["bands"] = src.count
             meta["is_georeferenced"] = src.crs is not None
-            arr = src.read()                       # (bands, H, W)
+            # Read only the first 3 bands (RGB) — avoids loading all bands for
+            # hyperspectral GeoTIFFs (which can have 10+ bands = hundreds of MB).
+            # Band count metadata is still correctly reported via src.count above.
+            if src.count >= 3:
+                arr = src.read([1, 2, 3])          # (3, H, W) — RGB only
+            else:
+                arr = src.read([1])                 # (1, H, W) — single band
             arr = np.moveaxis(arr, 0, -1)           # (H, W, bands)
             if arr.shape[-1] >= 3:
                 rgb = arr[:, :, :3]
@@ -344,6 +364,16 @@ def _restore_attn(model, prev):
 
 def _extract(model, processor, image: Image.Image, query: str, max_new_tokens: int = 128):
     """Single-image generation with attention extraction for evidence."""
+    # Resize large images before inference to prevent OOM.
+    # Qwen3-VL's vision encoder processes at ~448px effective resolution.
+    # Very large satellite images (e.g. 4096x4096) would be downscaled internally
+    # anyway, but occupying 48MB+ of CPU RAM during encoding. Cap at 1024px.
+    _MAX_INFERENCE_SIDE = int(os.getenv("SATQUERY_MAX_IMAGE_SIDE", "1024"))
+    w, h = image.size
+    if max(w, h) > _MAX_INFERENCE_SIDE:
+        scale = _MAX_INFERENCE_SIDE / max(w, h)
+        image = image.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
     device = next(model.parameters()).device
     messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": query}]}]
     text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -372,6 +402,7 @@ def _extract(model, processor, image: Image.Image, query: str, max_new_tokens: i
     n_image_tokens = len(image_positions)
 
     if not out.attentions or n_image_tokens == 0:
+        del out, inputs  # Release memory
         return answer, None, None
 
     n_layers = len(out.attentions[0])
@@ -386,19 +417,32 @@ def _extract(model, processor, image: Image.Image, query: str, max_new_tokens: i
             head_avg = layer_attn[0, :, -1, :].mean(dim=0)
             accum += head_avg[image_positions]
             n_used += 1
+
+    # Release the large attention output immediately after extraction
+    del out, inputs
+
     if n_used == 0:
         return answer, None, None
     attn_1d = (accum / n_used).float().cpu().numpy()
+    del accum  # Release accumulator tensor
 
     grid = None
-    grid_thw = inputs.get("image_grid_thw")
-    if grid_thw is not None:
-        vals = grid_thw[0].tolist() if hasattr(grid_thw[0], "tolist") else grid_thw[0]
-        vision_config = getattr(model.config, "vision_config", None)
-        merge = getattr(vision_config, "spatial_merge_size", 1)
-        h_p, w_p = int(vals[-2]) // merge, int(vals[-1]) // merge
-        if h_p * w_p == len(attn_1d):
-            grid = (h_p, w_p)
+    # Re-read image_grid_thw from a saved reference (already extracted above)
+    # We need to get it from a separate processor call since inputs was deleted
+    # Use the processor to get grid info without re-running model
+    try:
+        inputs_for_grid = processor(text=[text], images=[image], return_tensors="pt")
+        grid_thw = inputs_for_grid.get("image_grid_thw")
+        del inputs_for_grid
+        if grid_thw is not None:
+            vals = grid_thw[0].tolist() if hasattr(grid_thw[0], "tolist") else grid_thw[0]
+            vision_config = getattr(model.config, "vision_config", None)
+            merge = getattr(vision_config, "spatial_merge_size", 1)
+            h_p, w_p = int(vals[-2]) // merge, int(vals[-1]) // merge
+            if h_p * w_p == len(attn_1d):
+                grid = (h_p, w_p)
+    except Exception:
+        pass
 
     return answer, attn_1d, grid
 
@@ -1430,6 +1474,14 @@ JS = r"""
 # BUILD UI
 # ============================================================
 def build_ui():
+    global gr
+    if gr is None:
+        try:
+            import gradio as _gr
+            gr = _gr
+        except ImportError:
+            raise RuntimeError("Gradio is not installed. To run the Gradio UI, install gradio>=4.0.0")
+
     example_options = []
     sample_candidates = [
         ("examples/scene_535.png", "Auto", None, "Auto", "Is a residential building present in this scene?"),

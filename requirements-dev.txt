@@ -1,0 +1,30 @@
+# ============================================================
+# SatQuery AI — Full Development Requirements
+# Includes Streamlit, Gradio, LangGraph, BitsAndBytes, Groq
+# for local dev, experiments, and the Gradio demo UI
+# ============================================================
+#
+# Install with:
+#   pip install -r requirements-dev.txt
+# ============================================================
+
+# All production packages
+-r requirements-production.txt
+
+# --- Gradio Demo UI (app.py __main__ block) ---
+gradio>=4.0.0,<6.0.0
+
+# --- Streamlit UI (src/satquery/ui/app.py) ---
+streamlit>=1.30.0,<2.0.0
+
+# --- LangGraph Agent (src/satquery/agent/graph.py + Streamlit UI) ---
+langgraph>=0.0.10,<0.5.0
+
+# --- 4-bit quantization (dev with CUDA GPU) ---
+bitsandbytes>=0.43.0,<0.46.0
+
+# --- Groq SDK (future integration, currently unused) ---
+# groq>=0.11.0
+
+# --- Training dependencies ---
+# torch-audio, datasets, etc. for fine-tuning

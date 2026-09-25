@@ -1,0 +1,60 @@
+# ============================================================
+# SatQuery AI — Production FastAPI Backend Requirements
+# CPU-only deployment (no CUDA, no Streamlit, no Gradio)
+# ============================================================
+#
+# Install with:
+#   pip install -r requirements-production.txt
+#
+# For GPU deployments:
+#   pip install -r requirements-gpu.txt
+# ============================================================
+
+# --- FastAPI Core ---
+fastapi>=0.100.0,<0.116.0
+uvicorn[standard]>=0.22.0,<0.35.0
+python-multipart>=0.0.6,<0.1.0
+
+# --- HTTP ---
+requests>=2.28.0,<3.0.0
+
+# --- Image Processing ---
+pillow>=10.0.0,<12.0.0
+numpy>=1.24.0,<2.2.0
+opencv-python-headless>=4.8.0,<4.11.0
+
+# --- Geospatial (GeoTIFF support) ---
+rasterio>=1.3.0,<2.0.0
+
+# --- Visualization (used in attention heatmap overlay) ---
+matplotlib>=3.7.0,<4.0.0
+
+# --- Data Validation & Config ---
+pydantic>=2.0.0,<3.0.0
+python-dotenv>=1.0.0,<2.0.0
+
+# --- PyTorch: CPU-only wheel (avoids 2.5GB CUDA download) ---
+# Install separately using:
+#   pip install torch==2.5.1+cpu --index-url https://download.pytorch.org/whl/cpu
+# OR uncomment the line below and use requirements-production-torch.txt
+# See: https://pytorch.org/get-started/locally/
+
+# --- Transformers & Model Loading ---
+transformers>=4.45.0,<4.52.0
+accelerate>=0.26.0,<1.5.0
+tokenizers>=0.19.0,<0.22.0
+safetensors>=0.4.0,<0.5.0
+
+# --- Optional: Cloud VLM Fallbacks (comment out if not using API keys) ---
+# google-generativeai is only activated when GEMINI_API_KEY env is set
+google-generativeai==0.8.3
+
+# openai is only activated when OPENAI_API_KEY env is set
+openai>=1.0.0,<2.0.0
+
+# NOTE: groq is NOT included — the groq package is not imported anywhere in the codebase
+# NOTE: streamlit is NOT included — only used in src/satquery/ui/app.py (dev UI)
+# NOTE: gradio is NOT included — import made conditional in app.py
+# NOTE: bitsandbytes is NOT included — only works with CUDA; no benefit on CPU deployment
+# NOTE: langgraph is NOT included — FastAPI path does NOT use SatQueryController/LangGraph
+#       (FastAPI uses app.py AgentController directly; LangGraph only used by Streamlit UI)
