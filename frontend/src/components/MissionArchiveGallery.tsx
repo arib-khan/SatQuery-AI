@@ -7,6 +7,9 @@ interface MissionArchiveGalleryProps {
   onSelectMission: (mission: BenchmarkMission) => void;
 }
 
+const FASTAPI_BASE_URL = process.env.NEXT_PUBLIC_FASTAPI_URL || 'http://localhost:8000';
+
+
 const FALLBACK_MISSIONS: BenchmarkMission[] = [
   {
     id: 'vrsbench_grounding',
@@ -69,7 +72,7 @@ export const MissionArchiveGallery: React.FC<MissionArchiveGalleryProps> = ({ on
   const [missions, setMissions] = useState<BenchmarkMission[]>(FALLBACK_MISSIONS);
 
   useEffect(() => {
-    fetch('http://localhost:8000/api/examples')
+    fetch(`${FASTAPI_BASE_URL}/api/examples`)
       .then((res) => {
         if (res.ok) return res.json();
         throw new Error('Fallback to local');
@@ -80,7 +83,7 @@ export const MissionArchiveGallery: React.FC<MissionArchiveGalleryProps> = ({ on
           setMissions(list);
         }
       })
-      .catch(() => {});
+      .catch(() => { });
   }, []);
 
   return (

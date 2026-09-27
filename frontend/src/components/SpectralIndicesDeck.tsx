@@ -8,6 +8,7 @@ interface SpectralIndicesDeckProps {
   previewA: string | null;
   onLoadBenchmarkSwath?: () => void;
 }
+const FASTAPI_BASE_URL = process.env.NEXT_PUBLIC_FASTAPI_URL || 'http://localhost:8000';
 
 // In-browser peer-reviewed remote sensing band math fallback engine
 function computeLocalSpectralIndex(imgSrc: string, indexType: string): Promise<{ img: string; stats: any }> {
@@ -212,7 +213,7 @@ export const SpectralIndicesDeck: React.FC<SpectralIndicesDeckProps> = ({ fileA,
         formData.append('index_type', indexType);
         formData.append('image', fileToSend);
 
-        const r = await fetch('http://localhost:8000/api/spectral-indices', {
+        const r = await fetch(`${FASTAPI_BASE_URL}/api/spectral-indices`, {
           method: 'POST',
           body: formData,
         });

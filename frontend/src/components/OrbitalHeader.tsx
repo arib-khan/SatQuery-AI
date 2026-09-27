@@ -6,6 +6,7 @@ import { SystemStatus } from '../types/satquery';
 interface OrbitalHeaderProps {
   status?: SystemStatus | null;
 }
+const FASTAPI_BASE_URL = process.env.NEXT_PUBLIC_FASTAPI_URL || 'http://localhost:8000';
 
 export const OrbitalHeader: React.FC<OrbitalHeaderProps> = ({ status: propStatus }) => {
   const [clock, setClock] = useState<string>('');
@@ -29,12 +30,12 @@ export const OrbitalHeader: React.FC<OrbitalHeaderProps> = ({ status: propStatus
       return;
     }
     const fetchStatus = () => {
-      fetch('http://localhost:8000/api/status')
+      fetch(`${FASTAPI_BASE_URL}/api/status`)
         .then((r) => (r.ok ? r.json() : null))
         .then((data) => {
           if (data) setLiveStatus(data);
         })
-        .catch(() => {});
+        .catch(() => { });
     };
     fetchStatus();
     const interval = setInterval(fetchStatus, 12000);
