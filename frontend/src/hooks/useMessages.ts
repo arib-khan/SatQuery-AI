@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { collection, query, orderBy, limit, startAfter, getDocs } from 'firebase/firestore';
-import { db } from '@/lib/firebase/client';
+import { getDb } from '@/lib/firebase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { subscribeToRecentMessages } from '@/services/messageService';
 import type { ChatMessage } from '@/types/chat';
@@ -48,6 +48,7 @@ export function useMessages(conversationId: string | null) {
     if (!user || !conversationId || messages.length === 0 || loadingMore) return;
     setLoadingMore(true);
     try {
+      const db = await getDb();
       const col = collection(db, 'users', user.uid, 'conversations', conversationId, 'messages');
       // Anchor pagination on the oldest currently-loaded message's timestamp.
       const oldest = messages[0];

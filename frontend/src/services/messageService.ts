@@ -13,12 +13,13 @@ import {
   type QueryDocumentSnapshot,
   type Unsubscribe,
 } from 'firebase/firestore';
-import { db } from '@/lib/firebase/client';
+import { getDb } from '@/lib/firebase/client';
 import type { ChatMessage, ImageRef, MessageMetadata, MessageRole, MessageStatus } from '@/types/chat';
 
-const messagesCol = (uid: string, conversationId: string) => collection(db, 'users', uid, 'conversations', conversationId, 'messages');
-const messageDoc = (uid: string, conversationId: string, messageId: string) =>
-  doc(db, 'users', uid, 'conversations', conversationId, 'messages', messageId);
+const messagesCol = async (uid: string, conversationId: string) =>
+  collection(await getDb(), 'users', uid, 'conversations', conversationId, 'messages');
+const messageDoc = async (uid: string, conversationId: string, messageId: string) =>
+  doc(await getDb(), 'users', uid, 'conversations', conversationId, 'messages', messageId);
 
 const PAGE_SIZE = 30;
 
@@ -48,7 +49,7 @@ export async function saveMessage(
   messageId: string,
   params: { role: MessageRole; content: string; images: ImageRef[]; status: MessageStatus; metadata?: MessageMetadata }
 ): Promise<void> {
-  await setDoc(messageDoc(uid, conversationId, messageId), {
+  await setDoc(await messageDoc(uid, conversationId, messageId), {
     role: params.role,
     content: params.content,
     images: params.images,
@@ -64,12 +65,12 @@ export async function updateMessageStatus(
   messageId: string,
   updates: Partial<{ content: string; images: ImageRef[]; status: MessageStatus; metadata: MessageMetadata }>
 ): Promise<void> {
-  await updateDoc(messageDoc(uid, conversationId, messageId), updates);
+  await updateDoc(await messageDoc(uid, conversationId, messageId), updates);
 }
 
 /** Most recent page of messages, oldest-first for display. Used for the initial conversation load. */
 export async function fetchLatestMessages(uid: string, conversationId: string): Promise<{ messages: ChatMessage[]; hasMore: boolean }> {
-  const q = query(messagesCol(uid, conversationId), orderBy('createdAt', 'desc'), fsLimit(PAGE_SIZE));
+  const q = query(await messagesCol(uid, conversationId), orderBy('createdAt', 'desc'), fsLimit(PAGE_SIZE));
   const snap = await getDocs(q);
   const messages = snap.docs.map((d) => fromSnap(d, conversationId)).reverse();
   return { messages, hasMore: snap.docs.length === PAGE_SIZE };
@@ -81,23 +82,45 @@ export async function fetchOlderMessages(
   conversationId: string,
   beforeDoc: QueryDocumentSnapshot
 ): Promise<{ messages: ChatMessage[]; hasMore: boolean }> {
-  const q = query(messagesCol(uid, conversationId), orderBy('createdAt', 'desc'), startAfter(beforeDoc), fsLimit(PAGE_SIZE));
+  const q = query(await messagesCol(uid, conversationId), orderBy('createdAt', 'desc'), startAfter(beforeDoc), fsLimit(PAGE_SIZE));
   const snap = await getDocs(q);
   const messages = snap.docs.map((d) => fromSnap(d, conversationId)).reverse();
   return { messages, hasMore: snap.docs.length === PAGE_SIZE };
 }
 
-/** Live subscription for the tail of the conversation (keeps the open chat in sync). */
+/**
+ * Live subscription for the tail of the conversation (keeps the open chat in
+ * sync). Returns an Unsubscribe synchronously — see the matching comment in
+ * conversationService.ts's subscribeToConversations for why, and why that's
+ * safe even though getDb() itself is async.
+ */
 export function subscribeToRecentMessages(
   uid: string,
   conversationId: string,
   onChange: (messages: ChatMessage[]) => void,
   onError: (err: Error) => void
 ): Unsubscribe {
-  const q = query(messagesCol(uid, conversationId), orderBy('createdAt', 'desc'), fsLimit(PAGE_SIZE));
-  return onSnapshot(
-    q,
-    (snap) => onChange(snap.docs.map((d) => fromSnap(d, conversationId)).reverse()),
-    (err) => onError(err as Error)
-  );
+  let unsub: Unsubscribe | null = null;
+  let cancelled = false;
+
+  (async () => {
+    try {
+      const col = await messagesCol(uid, conversationId);
+      if (cancelled) return;
+      const q = query(col, orderBy('createdAt', 'desc'), fsLimit(PAGE_SIZE));
+      unsub = onSnapshot(
+        q,
+        (snap) => onChange(snap.docs.map((d) => fromSnap(d, conversationId)).reverse()),
+        (err) => onError(err as Error)
+      );
+      if (cancelled) unsub();
+    } catch (err) {
+      if (!cancelled) onError(err as Error);
+    }
+  })();
+
+  return () => {
+    cancelled = true;
+    unsub?.();
+  };
 }
